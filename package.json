@@ -1,0 +1,11 @@
+{
+  "name": "tempguard-sync",
+  "version": "1.0.0",
+  "dependencies": {
+    "@tuya/tuya-connector-nodejs": "^2.0.0",
+    "pg": "^8.0.0"
+  },
+  "scripts": {
+    "start": "node index.js"
+  }
+}
