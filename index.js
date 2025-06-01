@@ -1,8 +1,14 @@
+require('dotenv').config(); // Cargar variables del archivo .env
+
 const { TuyaContext } = require('@tuya/tuya-connector-nodejs');
 const { Client } = require('pg');
+const sgMail = require('@sendgrid/mail');
 
-// Log para confirmar que el script se lanza
-console.log("🚀 Iniciando lectura de Tuya...");
+// Configuración SendGrid
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
+sgMail.setApiKey(SENDGRID_API_KEY);
+
+const SENSOR_ID = 'sensor1'; // ID lógico que usamos internamente
 
 const context = new TuyaContext({
   baseUrl: process.env.TUYA_API_URL,
@@ -15,40 +21,93 @@ const db = new Client({
   ssl: { rejectUnauthorized: false }
 });
 
-const DEVICE_ID = process.env.TUYA_DEVICE_ID;
-const SENSOR_ID = 'sensor1';
-
 (async () => {
   try {
-    console.log("📡 Pidiendo datos a Tuya...");
+    console.log("🚀 Iniciando lectura de Tuya...");
+
     const res = await context.request({
       method: 'GET',
-      path: `/v1.0/devices/${DEVICE_ID}/status`,
+      path: `/v1.0/devices/${process.env.TUYA_DEVICE_ID}/status`,
     });
 
-    console.log("🔍 Respuesta de Tuya:", JSON.stringify(res, null, 2));
-
-    const temperatura = res.result?.find(x => x.code === 'temp_current_external')?.value;
-
-    if (temperatura === undefined) {
-      console.error("⛔ No se pudo encontrar la temperatura.");
+    const raw = res.result?.find(x => x.code === 'temp_current_external')?.value;
+    if (raw === undefined) {
+      console.error("⛔ No se encontró temperatura externa.");
       return;
     }
 
-    const timestamp = new Date().toISOString();
-    console.log(`🌡️ Temperatura obtenida: ${temperatura / 10} °C @ ${timestamp}`);
+    const temperatura = raw / 10;
+    const timestamp = new Date();
+    console.log(`🌡️ Temp: ${temperatura} °C @ ${timestamp.toISOString()}`);
 
     await db.connect();
 
-    const insert = `
-      INSERT INTO lecturas (sensor_id, fecha, temperatura)
-      VALUES ($1, $2, $3)
-    `;
-    await db.query(insert, [SENSOR_ID, timestamp, temperatura / 10]);
+    // 1. Guardar lectura
+    await db.query(
+      `INSERT INTO lecturas (sensor_id, fecha, temperatura) VALUES ($1, $2, $3)`,
+      [SENSOR_ID, timestamp.toISOString(), temperatura]
+    );
 
-    console.log('✅ Guardado en la base de datos');
+    // 2. Obtener configuración del sensor y correo del cliente
+    const confRes = await db.query(`
+      SELECT s.umbral_min, s.umbral_max, c.email
+      FROM sensores s
+      JOIN clientes c ON c.id = s.cliente_id
+      WHERE s.id = $1
+    `, [SENSOR_ID]);
+
+    if (confRes.rows.length === 0) {
+      console.warn(`⚠️ No se encontró configuración para el sensor ${SENSOR_ID}`);
+      return;
+    }
+
+    const { umbral_min, umbral_max, email } = confRes.rows[0];
+    const fueraDeRango = temperatura < umbral_min || temperatura > umbral_max;
+
+    if (!fueraDeRango) {
+      console.log("✅ Temperatura dentro del rango.");
+      return;
+    }
+
+    // 3. Verificar alertas en las últimas 24h
+    const desde = new Date(timestamp.getTime() - 24 * 60 * 60 * 1000);
+    const countRes = await db.query(`
+      SELECT COUNT(*) FROM alertas_enviadas
+      WHERE sensor_id = $1 AND fecha >= $2
+    `, [SENSOR_ID, desde.toISOString()]);
+
+    if (parseInt(countRes.rows[0].count) >= 2) {
+      console.log("⏱️ Ya se enviaron 2 alertas en las últimas 24h.");
+      return;
+    }
+
+    // 4. Enviar correo
+    const mensaje = {
+      to: email,
+      from: email,
+      subject: `⚠️ TempGuard – Alerta de temperatura (${SENSOR_ID})`,
+      html: `
+        <p>Se ha detectado una temperatura fuera de rango:</p>
+        <ul>
+          <li><strong>Sensor:</strong> ${SENSOR_ID}</li>
+          <li><strong>Temperatura:</strong> ${temperatura} °C</li>
+          <li><strong>Fecha:</strong> ${timestamp.toISOString()}</li>
+          <li><strong>Rango permitido:</strong> ${umbral_min} – ${umbral_max} °C</li>
+        </ul>
+      `
+    };
+
+    await sgMail.send(mensaje);
+    console.log("📤 Alerta enviada correctamente.");
+
+    // 5. Registrar alerta
+    await db.query(
+      `INSERT INTO alertas_enviadas (sensor_id, fecha, tipo, valor) VALUES ($1, $2, $3, $4)`,
+      [SENSOR_ID, timestamp.toISOString(), 'temp_fuera_rango', temperatura]
+    );
+
   } catch (err) {
-    console.error('⛔ Error general:', err.message);
+    console.error("⛔ Error general:", err.message);
   } finally {
     await db.end();
   }
