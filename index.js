@@ -74,17 +74,18 @@ const db = new Client({
     console.log(`⚠️ TEMP FUERA DE RANGO: ${temperatura} ºC (rango: ${umbral_min} – ${umbral_max})`);
     console.log(`📧 Preparando envío a: ${email}`);
 
-    // 3. Verificar alertas en las últimas 24h
-    const desde = new Date(timestamp.getTime() - 24 * 60 * 60 * 1000);
-    const countRes = await db.query(`
-      SELECT COUNT(*) FROM alertas_enviadas
-      WHERE sensor_id = $1 AND fecha >= $2
-    `, [SENSOR_ID, desde.toISOString()]);
+    // 3. Comprobar si hubo una alerta en las últimas 12 horas
+  const desde = new Date(timestamp.getTime() - 12 * 60 * 60 * 1000);
+  const countRes = await db.query(`
+    SELECT COUNT(*) FROM alertas_enviadas
+    WHERE sensor_id = $1 AND fecha >= $2
+  `, [SENSOR_ID, desde.toISOString()]);
 
-    if (parseInt(countRes.rows[0].count) >= 2) {
-      console.log("⏱️ Ya se enviaron 2 alertas en las últimas 24h.");
-      return;
-    }
+  if (parseInt(countRes.rows[0].count) > 0) {
+    console.log("⏱️ Ya se envió una alerta en las últimas 12h.");
+    return;
+  }
+
 
     // 4. Enviar correo con fecha en horario local
     const mensaje = {
