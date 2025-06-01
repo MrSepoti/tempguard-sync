@@ -3,6 +3,7 @@ require('dotenv').config(); // Cargar variables del archivo .env
 const { TuyaContext } = require('@tuya/tuya-connector-nodejs');
 const { Client } = require('pg');
 const sgMail = require('@sendgrid/mail');
+const { DateTime } = require('luxon'); // Añadido Luxon
 
 // Configuración SendGrid
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
@@ -37,7 +38,7 @@ const db = new Client({
     }
 
     const temperatura = raw / 10;
-    const timestamp = new Date();
+    const timestamp = DateTime.now().setZone('Europe/Madrid').toJSDate(); // Hora en España
     console.log(`🌡️ Temp: ${temperatura} °C @ ${timestamp.toISOString()}`);
 
     await db.connect();
@@ -69,8 +70,12 @@ const db = new Client({
       return;
     }
 
+    // TEMP fuera de rango:
+    console.log(`⚠️ TEMP FUERA DE RANGO: ${temperatura} ºC (rango: ${umbral_min} – ${umbral_max})`);
+    console.log(`📧 Preparando envío a: ${email}`);
+
     // 3. Verificar alertas en las últimas 24h
-    const desde = new Date(timestamp.getTime() - 24 * 60 * 60 * 1000);
+    const desde = DateTime.fromJSDate(timestamp).minus({ hours: 24 }).toJSDate();
     const countRes = await db.query(`
       SELECT COUNT(*) FROM alertas_enviadas
       WHERE sensor_id = $1 AND fecha >= $2
@@ -97,8 +102,12 @@ const db = new Client({
       `
     };
 
-    await sgMail.send(mensaje);
-    console.log("📤 Alerta enviada correctamente.");
+    try {
+      await sgMail.send(mensaje);
+      console.log("📤 Alerta enviada correctamente.");
+    } catch (err) {
+      console.error("⛔ Error al enviar correo:", err.message);
+    }
 
     // 5. Registrar alerta
     await db.query(
