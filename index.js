@@ -101,7 +101,7 @@ const ZONE_MADRID = 'Europe/Madrid';    // Para mostrar hora local
     /* 7. Enviar correo */
     const msg = {
       to:   email,
-      from: 'tempguard.info@gmail.com',
+      from: process.env.SENDGRID_FROM,
       subject: `⚠️ TempGuard – Alerta de temperatura (${SENSOR_ID})`,
       html: `
         <p>Se ha detectado una temperatura fuera de rango:</p>
